@@ -1,0 +1,41 @@
+{
+  "name": "health-tracker",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build",
+    "start": "next start --hostname 0.0.0.0",
+    "preview": "next start --hostname 0.0.0.0",
+    "typecheck": "tsc --noEmit",
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch"
+  },
+  "dependencies": {
+    "@ant-design/nextjs-registry": "^1.3.0",
+    "@google/genai": "^2.30.0",
+    "antd": "^6.6.6",
+    "framer-motion": "14.2.0",
+    "jspdf": "^3.0.1",
+    "lucide-react": "^0.468.0",
+    "next": "^16.4.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@jest/globals": "^30.0.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "jest": "^30.0.0",
+    "postcss": "^8.5.30",
+    "tailwindcss": "^4.3.3",
+    "ts-jest": "^29.4.14",
+    "typescript": "~5.7.3"
+  }
+}
