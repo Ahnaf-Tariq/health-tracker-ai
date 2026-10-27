@@ -1,15 +1,18 @@
 # Health Tracker
 
-Health Tracker is an adults-only wellness check-in with an editorial landing page at `/` and the existing single-flow check-in at `/check-in`. It brings your readings and everyday context together in a calm, plain-language snapshot. It uses **deterministic rules—no AI**—and is not a diagnosis or a medical measurement.
+Health Tracker is an adults-only wellness check-in with a landing page at `/` and a check-in at `/check-in`. The report is calculated with deterministic, transparent rules in the browser. An optional Gemini wellness guide is available after sign-in at `/chat`; it does not change the rule-based report.
 
-## Privacy by design
+## Privacy and saved data
 
-Health Tracker has no login, accounts, database, health-analysis server, third-party AI, analytics, advertising trackers, cookies, remote fonts, or health-data persistence. Your answers are calculated in the browser and stay in memory until you start over, reload, or close the page. The app makes no request with your answers. There is no local save and nothing is written to `localStorage`. The page shell and app assets are still served by the Next.js hosting provider.
+You can complete the check-in without an account. Answers and the generated report remain in browser memory. Copy, print, download, and AI chat actions require sign-in. Firebase stores account profile fields and saved chat history. A sanitized report snapshot is saved only with a report-based conversation; general chats have no report context. The private safety note is excluded. When a user sends a chat message, the message and attached report context are sent through the Next.js server route to Google Gemini. HealthTracker does not log chat content.
 
-Opening an external source link opens its public health-education page only; no check-in values are attached to that request. Choosing Copy, PDF, Print, or Save as PDF creates a file/copy on your own device at your direction.
+Copy, print, and PDF creation happen in the browser and save a local copy at the user's direction. A check-in is not added to Firebase by those actions alone.
 
-Next.js serves the page and assets, while validation and health calculations run in the browser. There are no health-analysis API routes or server actions, and check-in answers are never submitted to the Next.js server. No credentials or environment variables are needed.
+## Firebase setup
 
+The client configuration is read from `NEXT_PUBLIC_FIREBASE_*` values. Start with `.env.example` and add the Firebase web app values to `.env.local`. For the server route to verify Firebase ID tokens, configure `FIREBASE_ADMIN_PROJECT_ID`, `FIREBASE_ADMIN_CLIENT_EMAIL`, and `FIREBASE_ADMIN_PRIVATE_KEY` as server-only variables. Generate a service-account credential in Firebase/GCP and never expose its private key in a `NEXT_PUBLIC_` variable or source control. `GEMINI_API_KEY` and `GEMINI_MODEL` are server-only too.
+
+Publish [`firestore.rules`](./firestore.rules) in Firebase Console > Firestore > Rules. Enable Firebase Storage and publish [`storage.rules`](./storage.rules) before profile photo uploads will work. Firebase Authentication must have Email/Password and Google providers enabled, and the production hostname must be listed under Authorized domains.
 ## Run locally
 
 Requirements: Node.js 20.9 or newer (Node.js 22 recommended) and npm.
@@ -36,8 +39,8 @@ npm start
 - `src/app/globals.css`: Tailwind import, light/dark design tokens, and shared base defaults. Component styling uses Tailwind utility classes in JSX.
 - `src/app/page.tsx`: editorial landing page with local photography, feature highlights, and navigation to the check-in.
 - `src/app/check-in/page.tsx`: the existing check-in and results flow, with all essential and optional fields preserved.
-- `src/components/AppProviders.tsx`: shared light/dark theme and Ant Design configuration.
-- `src/App.tsx`: client component containing the check-in flow and its in-memory state.
+- `src/components/AppProviders.tsx`: Firebase auth state, ephemeral check-in report state, shared theme and Ant Design configuration.
+- `src/App.tsx`: client component containing the guest check-in flow; report state remains in memory while navigating to login.
 - `src/components/SelectField.tsx`: shared Ant Design dropdown with accessible labels, validation status, and Tailwind sizing classes. The shared `ConfigProvider` supplies matching light/dark colors and touch-target sizes.
 - `src/components`, `src/domain`, and `src/lib`: interface, browser health calculations, and report exports.
 - `src/proxy.ts`: per-request Content Security Policy nonces for Next.js scripts.
@@ -64,7 +67,7 @@ The source-based audit, corrections and remaining limitations are in [`CLINICAL_
 
 ## PDF and print
 
-The report is generated in your browser only. Health Tracker prepares its PDF library while the results page is opening and uses a local Blob download initiated by the **Download report (PDF)** button. The report includes the visible explanations, source links, context and complete disclaimer. It shows an accessible progress/status message. If browser download restrictions or an error prevent the file from starting, use **Print / Save as PDF** or **Copy summary** instead. The PDF filename is `health-tracker-wellness-summary.pdf`.
+The report is generated in your browser. After sign-in, Health Tracker prepares its PDF library while the results page is opening and uses a local Blob download initiated by the **Download report (PDF)** button. PDF, print, and copy actions do not save the check-in to Firebase. The report includes the visible explanations, source links, context and complete disclaimer. It shows an accessible progress/status message. If browser download restrictions or an error prevent the file from starting, use **Print / Save as PDF** or **Copy summary** instead. The PDF filename is `health-tracker-wellness-summary.pdf`.
 
 ## Accessibility and security
 
@@ -81,7 +84,7 @@ No formal WCAG AA audit, Lighthouse run or clinical validation study has been pe
 - The free-text self-harm and disordered-eating checks are local keyword heuristics. They can miss ways of describing distress or flag wording without understanding context; they are not monitored or a substitute for emergency/crisis support. If you or someone else is in immediate danger, contact local emergency services.
 - The app cannot identify all reasons for tiredness or rule out illness. It does not calculate an energy score and must not be used to delay care. Ongoing fatigue is a follow-up prompt regardless of sleep hours.
 - Health Tracker uses English; an Urdu/RTL translation is not included in this release.
-- Browser computation keeps answers off the analysis server, but does not replace secure device use, careful storage of downloaded reports, or clinical care.
+- Browser computation keeps check-in answers off the analysis server unless a report-based AI chat is started. Secure device use, careful storage of downloaded reports, and clinical care remain important.
 
 ## Disclaimer
 

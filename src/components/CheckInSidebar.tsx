@@ -84,9 +84,7 @@ export function CheckInSidebar({ onPrivacy }: { onPrivacy?: () => void }) {
           Safe. Private. Yours.
         </h2>
         <p className="relative mb-5 text-[12px] leading-[1.85] text-[#d4e5dc]">
-          Your report is calculated in this browser. If you choose the AI chat,
-          your report and messages are sent to Google Gemini. HealthTracker does
-          not save them.
+          Your report is calculated in this browser. If you choose the AI chat, your report and messages are sent to Google Gemini. Your Firebase account saves report-based chat history.
         </p>
         {onPrivacy ? (
           <button

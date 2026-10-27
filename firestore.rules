@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedInAs(uid) { return request.auth != null && request.auth.uid == uid; }
+    function safeContext(context) {
+      return context == null || (
+        context is map && context.keys().hasOnly(['answers', 'report']) &&
+        context.answers is map && !context.answers.keys().hasAny(['notes']) &&
+        context.report is map && context.report.keys().hasOnly(['inputs', 'bp', 'bloodType', 'bmi', 'waistToHeightRatio', 'sleep', 'heartRate', 'glucose', 'context', 'safety', 'status', 'summary', 'actions', 'fatigueReasons', 'doctorQuestions']) &&
+        context.report.inputs is map && !context.report.inputs.keys().hasAny(['notes']) &&
+        context.report.safety is map && context.report.safety.selfHarmConcern == false
+      );
+    }
+    function validProfile(data) {
+      return (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100)) &&
+        (!('name' in data) || (data.name is string && data.name.size() <= 100)) &&
+        (!('address' in data) || (data.address is string && data.address.size() <= 300)) &&
+        (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 2048));
+    }
+
+    match /users/{uid} {
+      allow read: if signedInAs(uid);
+      allow create: if signedInAs(uid) &&
+        request.resource.data.keys().hasOnly(['displayName', 'name', 'email', 'chats_left', 'restore_time', 'chat_limit_updated_at', 'address', 'avatarUrl', 'createdAt', 'updatedAt']) &&
+        (!('email' in request.resource.data) || request.resource.data.email == request.auth.token.email) &&
+        (!('chats_left' in request.resource.data) || request.resource.data.chats_left == 10) &&
+        (!('restore_time' in request.resource.data) || request.resource.data.restore_time == null) &&
+        (!('chat_limit_updated_at' in request.resource.data) || request.resource.data.chat_limit_updated_at == null) &&
+        validProfile(request.resource.data);
+      allow update: if signedInAs(uid) &&
+        request.resource.data.keys().hasOnly(['displayName', 'name', 'address', 'avatarUrl', 'createdAt', 'updatedAt', 'email', 'chats_left', 'restore_time', 'chat_limit_updated_at']) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'name', 'address', 'avatarUrl', 'updatedAt']) &&
+        validProfile(request.resource.data);
+      // Do not allow a client to delete the root user record and reset server-owned chat allowance fields.
+      allow delete: if false;
+
+      match /conversations/{conversationId} {
+        allow read: if signedInAs(uid);
+        allow create: if signedInAs(uid) &&
+          request.resource.data.keys().hasOnly(['title', 'source', 'context', 'createdAt', 'updatedAt']) &&
+          request.resource.data.title is string && request.resource.data.title.size() <= 100 &&
+          request.resource.data.source in ['report', 'general'] &&
+          (request.resource.data.source == 'report' ? request.resource.data.context is map : request.resource.data.context == null) &&
+          safeContext(request.resource.data.context);
+        allow update: if signedInAs(uid) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'updatedAt']) &&
+          request.resource.data.title is string && request.resource.data.title.size() <= 100;
+        allow delete: if signedInAs(uid);
+
+        match /messages/{messageId} {
+          allow read: if signedInAs(uid);
+          allow create, update: if signedInAs(uid) &&
+            request.resource.data.keys().hasOnly(['role', 'content', 'createdAt']) &&
+            request.resource.data.role in ['user', 'assistant'] &&
+            request.resource.data.content is string && request.resource.data.content.size() > 0 && request.resource.data.content.size() <= 4000;
+          allow delete: if signedInAs(uid);
+        }
+      }
+    }
+  }
+}

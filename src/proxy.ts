@@ -5,11 +5,12 @@ export function proxy(request: NextRequest) {
   const isDevelopment = process.env.NODE_ENV === 'development';
   const policy = [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}'${isDevelopment ? " 'unsafe-eval'" : ''}`,
+    `script-src 'self' 'nonce-${nonce}' https://apis.google.com${isDevelopment ? " 'unsafe-eval'" : ''}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    "img-src 'self' data: blob: https://*.googleusercontent.com https://firebasestorage.googleapis.com https://*.firebasestorage.app https://res.cloudinary.com",
     "font-src 'self' data:",
-    `connect-src 'self'${isDevelopment ? ' ws: wss:' : ''}`,
+    `connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebaseapp.com https://*.firebasestorage.app https://api.cloudinary.com${isDevelopment ? ' ws: wss:' : ''}`,
+    "frame-src 'self' https://*.firebaseapp.com https://accounts.google.com",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

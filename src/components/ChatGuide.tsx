@@ -1,23 +1,33 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUp,
   HeartPulse,
   Pause,
-  RotateCcw,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import type { WellnessReport } from "../domain/types";
 import { formatMeasurement } from "../domain/format";
 import { hasSelfHarmConcern } from "../domain/privacy";
+import { getFirebaseAuth } from "../lib/firebase";
+import { saveMessage, type ChatUsage } from "../lib/chatStore";
+import { useAuth } from "./AppProviders";
+import { useRouter } from "next/navigation";
+import { createConversation } from "../lib/chatStore";
+import { createSafeChatContext } from "../domain/chatContext";
 
 type Message = { id: string; role: "user" | "assistant"; content: string };
 
 interface Props {
-  report: WellnessReport;
+  report: WellnessReport | null;
+  conversationId: string;
+  initialMessages: Message[];
+  historyReady: boolean;
+  historyError: string;
+  onRetryHistory: () => void;
   onBack: () => void;
   onSupport: () => void;
 }
@@ -28,22 +38,14 @@ const STARTER_PROMPTS = [
   "What is one small habit I could try this week?",
 ];
 
-function makeSessionId() {
-  return typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function safeContext(report: WellnessReport) {
-  const { notes: _privateSafetyNote, ...answers } = report.inputs;
-  return {
-    answers,
-    report: {
-      ...report,
-      inputs: answers,
-      safety: { ...report.safety, selfHarmConcern: false },
-    },
-  };
+function formatRemainingTime(milliseconds: number) {
+  const seconds = Math.max(0, Math.ceil(milliseconds / 1_000));
+  const hours = Math.floor(seconds / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const remainder = seconds % 60;
+  return hours > 0
+    ? `${hours}h ${minutes}m ${remainder}s`
+    : `${minutes}m ${remainder}s`;
 }
 
 async function readError(response: Response) {
@@ -55,6 +57,47 @@ async function readError(response: Response) {
     // The server may return a non-JSON proxy error.
   }
   return "The AI guide could not respond just now. Please try again.";
+}
+
+async function fetchChatUsage(idToken: string): Promise<ChatUsage> {
+  const response = await fetch("/api/chat/usage", {
+    headers: { Authorization: `Bearer ${idToken}` },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    let serverMessage = "No error message was returned.";
+    try {
+      const errorBody = (await response.json()) as { error?: unknown };
+      if (typeof errorBody.error === "string") serverMessage = errorBody.error;
+    } catch {
+      // Keep the status code if the server response wasn't JSON.
+    }
+    console.error("[chat/usage] Allowance request failed.", {
+      status: response.status,
+      statusText: response.statusText,
+      message: serverMessage,
+    });
+    throw new Error(`Chat allowance request failed (${response.status}).`);
+  }
+  const data = (await response.json()) as {
+    chats_left?: unknown;
+    restore_time?: unknown;
+  };
+  const parsedRestoreTime =
+    typeof data.restore_time === "string" ? Date.parse(data.restore_time) : NaN;
+  if (
+    !Number.isInteger(data.chats_left) ||
+    (data.chats_left as number) < 0 ||
+    (data.chats_left as number) > 10 ||
+    (data.restore_time !== null && !Number.isFinite(parsedRestoreTime))
+  ) {
+    throw new Error("The server returned an invalid chat allowance.");
+  }
+  return {
+    chatsLeft: data.chats_left as number,
+    restoreTime: Number.isFinite(parsedRestoreTime) ? parsedRestoreTime : null,
+    updatedAt: null,
+  };
 }
 
 async function consumeEventStream(
@@ -110,32 +153,92 @@ async function consumeEventStream(
     );
 }
 
-export function ChatGuide({ report, onBack, onSupport }: Props) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content:
-        "I can help make sense of your check-in, think through small next steps, or prepare questions for your doctor. What would be most helpful?",
-    },
-  ]);
+export function ChatGuide({
+  report,
+  conversationId,
+  initialMessages,
+  historyReady,
+  historyError,
+  onRetryHistory,
+  onBack,
+  onSupport,
+}: Props) {
+  const router = useRouter();
+  const { user } = useAuth();
+  const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [retryText, setRetryText] = useState("");
-  const [sessionId, setSessionId] = useState(makeSessionId);
-  const [requestCount, setRequestCount] = useState(0);
+  const [usage, setUsage] = useState<ChatUsage>({
+    chatsLeft: 10,
+    restoreTime: null,
+    updatedAt: null,
+  });
+  const [usageReady, setUsageReady] = useState(false);
+  const [usageError, setUsageError] = useState("");
+  const [usageRetry, setUsageRetry] = useState(0);
+  const [clockNow, setClockNow] = useState(0);
+  const [creatingChat, setCreatingChat] = useState(false);
   const conversationRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const stickToBottomRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
   const sendingRef = useRef(false);
-  const context = useMemo(() => safeContext(report), [report]);
   const userMessageCount = messages.filter(
     (message) => message.role === "user",
   ).length;
-  const remaining = Math.max(0, 20 - Math.max(userMessageCount, requestCount));
+  const remaining =
+    usage.restoreTime !== null && clockNow >= usage.restoreTime
+      ? 10
+      : usage.chatsLeft;
+  const restoreCountdown =
+    usage.restoreTime !== null && clockNow < usage.restoreTime && remaining < 10
+      ? formatRemainingTime(usage.restoreTime - clockNow)
+      : "";
+
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    const refreshUsage = async () => {
+      try {
+        const idToken = await user.getIdToken();
+        const nextUsage = await fetchChatUsage(idToken);
+        if (active) {
+          setUsage(nextUsage);
+          setUsageError("");
+          setUsageReady(true);
+        }
+      } catch {
+        if (active) {
+          setUsageError("We couldn’t load your saved message allowance. Please retry.");
+          setUsageReady(false);
+        }
+      }
+    };
+    setUsageReady(false);
+    setUsageError("");
+    void refreshUsage();
+    const interval = window.setInterval(refreshUsage, 60_000);
+    window.addEventListener("focus", refreshUsage);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshUsage);
+    };
+  }, [user, usageRetry]);
+
+  useEffect(() => {
+    const updateClock = () => setClockNow(Date.now());
+    updateClock();
+    const timer = window.setInterval(updateClock, 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (historyReady) setMessages(initialMessages);
+  }, [conversationId, historyReady, initialMessages]);
 
   useEffect(() => {
     const conversation = conversationRef.current;
@@ -159,7 +262,8 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
     composer.style.height = "auto";
     const nextHeight = Math.min(composer.scrollHeight, maxHeight);
     composer.style.height = `${nextHeight}px`;
-    composer.style.overflowY = composer.scrollHeight > maxHeight ? "auto" : "hidden";
+    composer.style.overflowY =
+      composer.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [draft]);
 
   async function requestReply(history: Message[], userText: string) {
@@ -174,9 +278,15 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
       setError("Please keep each message to 1,200 characters or fewer.");
       return;
     }
+    if (!historyReady || !usageReady) {
+      setError(
+        "Your saved chat or message allowance is still loading. Please try again in a moment.",
+      );
+      return;
+    }
     if (remaining <= 0) {
       setError(
-        "This chat has reached its 20-message limit. Start over to begin a new chat.",
+        "You’ve used all 10 AI messages in this 5-hour window. Your allowance will restore automatically.",
       );
       return;
     }
@@ -203,29 +313,36 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
     setError("");
     setNotice("");
     setRetryText("");
-    setRequestCount((count) => count + 1);
     const controller = new AbortController();
     abortRef.current = controller;
 
+    let assistantText = "";
     try {
+      if (!user)
+        throw new Error("Please sign in again to continue this conversation.");
+      await saveMessage(user.uid, conversationId, updatedHistory.at(-1)!);
+      const idToken = await getFirebaseAuth().currentUser?.getIdToken();
+      if (!idToken)
+        throw new Error("Your sign-in expired. Please sign in again.");
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
+          Authorization: `Bearer ${idToken}`,
         },
-        body: JSON.stringify({
-          sessionId,
-          context,
-          messages: updatedHistory.map(({ role, content }) => ({
-            role,
-            content,
-          })),
-        }),
+        body: JSON.stringify({ conversationId }),
         signal: controller.signal,
       });
       if (!response.ok) {
         const message = await readError(response);
+        void fetchChatUsage(idToken)
+          .then((nextUsage) => {
+            setUsage(nextUsage);
+            setUsageReady(true);
+            setUsageError("");
+          })
+          .catch(() => {});
         if (message === "support_required") {
           onSupport();
           return;
@@ -233,7 +350,23 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
         throw new Error(message);
       }
 
+      const chatsLeft = Number(response.headers.get("X-Chat-Chats-Left"));
+      const restoreTimeHeader = response.headers.get("X-Chat-Restore-Time");
+      const restoreTime = restoreTimeHeader
+        ? Date.parse(restoreTimeHeader)
+        : NaN;
+      if (Number.isInteger(chatsLeft) && chatsLeft >= 0 && chatsLeft <= 10) {
+        setUsage({
+          chatsLeft,
+          restoreTime: Number.isFinite(restoreTime) ? restoreTime : null,
+          updatedAt: Date.now(),
+        });
+        setUsageReady(true);
+        setUsageError("");
+      }
+
       await consumeEventStream(response, (text) => {
+        assistantText += text;
         setMessages((current) =>
           current.map((message) =>
             message.id === assistantId
@@ -242,8 +375,22 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
           ),
         );
       });
+      if (assistantText)
+        await saveMessage(user.uid, conversationId, {
+          id: assistantId,
+          role: "assistant",
+          content: assistantText,
+        });
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") {
+        if (user) {
+          if (assistantText)
+            void saveMessage(user.uid, conversationId, {
+              id: assistantId,
+              role: "assistant",
+              content: assistantText,
+            }).catch(() => {});
+        }
         setMessages((current) =>
           current.filter(
             (message) => message.content || message.role !== "assistant",
@@ -258,7 +405,6 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
           ? caught.message
           : "The AI guide could not respond just now. Please try again.",
       );
-      setRequestCount((count) => Math.max(0, count - 1));
     } finally {
       sendingRef.current = false;
       setLoading(false);
@@ -274,52 +420,52 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
     void requestReply(messages, text);
   }
 
-  function startOver() {
-    abortRef.current?.abort();
-    sendingRef.current = false;
-    setMessages([
-      {
-        id: "welcome",
-        role: "assistant",
-        content:
-          "I can help make sense of your check-in, think through small next steps, or prepare questions for your doctor. What would be most helpful?",
-      },
-    ]);
-    setSessionId(makeSessionId());
-    setRequestCount(0);
-    setDraft("");
-    setError("");
-    setNotice("");
-    setRetryText("");
-    setLoading(false);
-  }
-
   function stopResponse() {
     if (!sendingRef.current) return;
     abortRef.current?.abort();
     setNotice("Response stopped. You can continue the conversation.");
   }
 
+  async function newChat() {
+    if (!user || creatingChat) return;
+    setCreatingChat(true);
+    try {
+      const source = report ? "report" : "general";
+      const id = await createConversation(
+        user.uid,
+        source,
+        report ? createSafeChatContext(report) : null,
+      );
+      router.push(`/chat/${id}`);
+    } catch {
+      setError(
+        "A new chat could not be created. Please check your connection and try again.",
+      );
+    } finally {
+      setCreatingChat(false);
+    }
+  }
+
   return (
     <main
-      className="mx-auto w-[calc(100%_-_32px)] max-w-[1160px] py-7 sm:w-[calc(100%_-_56px)] sm:py-10"
+      className="mx-auto w-[calc(100%_-_32px)] max-w-[1160px] py-4 sm:w-[calc(100%_-_56px)]"
       aria-labelledby="chat-heading"
     >
-      <div className="mb-6 flex items-center justify-between gap-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
         <button
           type="button"
           onClick={onBack}
           className="inline-flex min-h-10 items-center gap-2 rounded-lg px-2 text-sm font-medium text-muted transition hover:bg-teal-tint hover:text-teal focus-visible:outline-2 focus-visible:outline-teal"
         >
-          <ArrowLeft size={17} aria-hidden="true" /> Back to your report
+          <ArrowLeft size={17} aria-hidden="true" /> Back to chats
         </button>
         <button
           type="button"
-          onClick={startOver}
-          disabled={loading}
+          onClick={() => void newChat()}
           className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-line bg-panel px-3 text-xs font-medium text-muted transition hover:border-teal hover:text-teal disabled:opacity-50"
         >
-          <RotateCcw size={15} aria-hidden="true" /> Start over
+          <Sparkles size={15} aria-hidden="true" />{" "}
+          {creatingChat ? "Creating…" : "New chat"}
         </button>
       </div>
 
@@ -384,6 +530,24 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
                 )}
               </div>
             ))}
+            {!historyReady && !historyError ? (
+              <div
+                className="flex flex-col gap-4"
+                role="status"
+                aria-label="Loading your saved messages"
+              >
+                <span className="sr-only">Loading your saved messages</span>
+                <div className="h-[72px] w-[78%] animate-pulse rounded-2xl rounded-tl-sm border border-line bg-paper px-4 py-3">
+                  <div className="mb-2 h-2.5 w-[90%] rounded-full bg-line/70" />
+                  <div className="h-2.5 w-[62%] rounded-full bg-line/70" />
+                </div>
+                <div className="ml-auto h-11 w-[32%] animate-pulse rounded-2xl rounded-tr-sm bg-teal/25" />
+                <div className="h-[58px] w-[66%] animate-pulse rounded-2xl rounded-tl-sm border border-line bg-paper px-4 py-3">
+                  <div className="mb-2 h-2.5 w-[86%] rounded-full bg-line/70" />
+                  <div className="h-2.5 w-[48%] rounded-full bg-line/70" />
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {userMessageCount === 0 && !loading ? (
@@ -402,6 +566,36 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
           ) : null}
 
           <div className="border-t border-line p-4 sm:p-6">
+            {historyError ? (
+              <div
+                className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber/30 bg-amber-bg px-3 py-2.5 text-xs text-ink"
+                role="alert"
+              >
+                <span>{historyError}</span>
+                <button
+                  type="button"
+                  onClick={onRetryHistory}
+                  className="font-semibold text-teal underline underline-offset-2"
+                >
+                  Reload messages
+                </button>
+              </div>
+            ) : null}
+            {usageError ? (
+              <div
+                className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber/30 bg-amber-bg px-3 py-2.5 text-xs text-ink"
+                role="alert"
+              >
+                <span>{usageError}</span>
+                <button
+                  type="button"
+                  onClick={() => setUsageRetry((retry) => retry + 1)}
+                  className="font-semibold text-teal underline underline-offset-2"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : null}
             {error ? (
               <div
                 className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber/30 bg-amber-bg px-3 py-2.5 text-xs text-ink"
@@ -412,7 +606,7 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
                   <button
                     type="button"
                     onClick={() => void requestReply(messages, retryText)}
-                    disabled={loading}
+                    disabled={loading || remaining === 0}
                     className="font-semibold text-teal underline underline-offset-2 disabled:opacity-50"
                   >
                     Try again
@@ -441,7 +635,13 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
                 maxLength={1_200}
                 rows={1}
                 placeholder="Ask a question about your check-in…"
-                disabled={loading || remaining === 0}
+                disabled={
+                  loading ||
+                  !historyReady ||
+                  Boolean(historyError) ||
+                  !usageReady ||
+                  remaining === 0
+                }
                 className="max-h-36 min-h-11 flex-1 resize-none overflow-y-hidden bg-transparent px-2 py-2 text-[13px] leading-relaxed text-ink outline-none placeholder:text-soft disabled:opacity-60"
               />
               {loading ? (
@@ -457,7 +657,13 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
               ) : (
                 <button
                   type="submit"
-                  disabled={!draft.trim() || remaining === 0}
+                  disabled={
+                    !draft.trim() ||
+                    !historyReady ||
+                    Boolean(historyError) ||
+                    !usageReady ||
+                    remaining === 0
+                  }
                   aria-label="Send message"
                   className="grid size-11 shrink-0 place-items-center rounded-lg bg-teal text-white transition hover:bg-teal-strong disabled:cursor-not-allowed disabled:opacity-45"
                 >
@@ -476,59 +682,79 @@ export function ChatGuide({ report, onBack, onSupport }: Props) {
             ) : null}
             <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-soft">
               <span>Enter to send · Shift + Enter for a new line</span>
-              <span>{remaining} messages left</span>
+              <span aria-live="polite">
+                {!historyReady
+                  ? "Loading saved chat…"
+                  : !usageReady
+                    ? usageError
+                      ? "Allowance unavailable"
+                      : "Checking allowance…"
+                    : `${remaining} messages left${restoreCountdown ? ` · restores in ${restoreCountdown}` : ""}`}
+              </span>
             </div>
           </div>
         </section>
 
         <aside className="grid gap-4">
-          <section className="rounded-2xl border border-line bg-panel p-5">
-            <div className="mb-4 flex items-center gap-2 text-teal">
-              <HeartPulse size={17} aria-hidden="true" />
-              <h2 className="m-0 text-[13px] font-semibold text-ink">
-                Your report at a glance
+          {report ? (
+            <section className="rounded-2xl border border-line bg-panel p-5">
+              <div className="mb-4 flex items-center gap-2 text-teal">
+                <HeartPulse size={17} aria-hidden="true" />
+                <h2 className="m-0 text-[13px] font-semibold text-ink">
+                  Your report at a glance
+                </h2>
+              </div>
+              <p className="mb-4 text-[12px] leading-relaxed text-muted">
+                {report.summary}
+              </p>
+              <dl className="grid gap-3 text-[11px]">
+                <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
+                  <dt className="text-muted">Blood pressure</dt>
+                  <dd className="m-0 text-right font-medium text-ink">
+                    {report.inputs.systolic !== undefined &&
+                    report.inputs.diastolic !== undefined
+                      ? `${formatMeasurement(report.inputs.systolic)} / ${formatMeasurement(report.inputs.diastolic)}`
+                      : "Not entered"}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
+                  <dt className="text-muted">BMI</dt>
+                  <dd className="m-0 text-right font-medium text-ink">
+                    {report.bmi.category === "Not assessed"
+                      ? "Not assessed"
+                      : `${formatMeasurement(report.bmi.value)} · ${report.bmi.category}`}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
+                  <dt className="text-muted">Sleep</dt>
+                  <dd className="m-0 text-right font-medium text-ink">
+                    {formatMeasurement(report.inputs.sleepHours)} hr ·{" "}
+                    {report.sleep.category}
+                  </dd>
+                </div>
+              </dl>
+            </section>
+          ) : (
+            <section className="rounded-2xl border border-line bg-panel p-5">
+              <h2 className="mb-2 mt-0 font-display text-[22px] font-normal">
+                A fresh conversation
               </h2>
-            </div>
-            <p className="mb-4 text-[12px] leading-relaxed text-muted">
-              {report.summary}
-            </p>
-            <dl className="grid gap-3 text-[11px]">
-              <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
-                <dt className="text-muted">Blood pressure</dt>
-                <dd className="m-0 text-right font-medium text-ink">
-                  {report.inputs.systolic !== undefined &&
-                  report.inputs.diastolic !== undefined
-                    ? `${formatMeasurement(report.inputs.systolic)} / ${formatMeasurement(report.inputs.diastolic)}`
-                    : "Not entered"}
-                </dd>
-              </div>
-              <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
-                <dt className="text-muted">BMI</dt>
-                <dd className="m-0 text-right font-medium text-ink">
-                  {report.bmi.category === "Not assessed"
-                    ? "Not assessed"
-                    : `${formatMeasurement(report.bmi.value)} · ${report.bmi.category}`}
-                </dd>
-              </div>
-              <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
-                <dt className="text-muted">Sleep</dt>
-                <dd className="m-0 text-right font-medium text-ink">
-                  {formatMeasurement(report.inputs.sleepHours)} hr ·{" "}
-                  {report.sleep.category}
-                </dd>
-              </div>
-            </dl>
-          </section>
+              <p className="mb-0 text-[12px] leading-relaxed text-muted">
+                This chat has no check-in attached. You can ask general wellness
+                questions or start another chat with your latest report.
+              </p>
+            </section>
+          )}
           <section className="rounded-2xl border border-line bg-teal-tint/60 p-5 text-[11px] leading-relaxed text-muted">
             <div className="mb-2 flex items-center gap-2 font-semibold text-teal">
               <ShieldCheck size={16} aria-hidden="true" /> A private, optional
               chat
             </div>
             <p className="mb-0">
-              Your chat and check-in context are sent to Google Gemini when you
-              send a message. HealthTracker does not save conversations. Your
-              private safety note is excluded. Don’t include names or other
-              identifying details.
+              Your messages and any attached report snapshot are saved to your
+              Firebase account and sent to Google Gemini when you send a
+              message. Your private safety note is excluded. Do not include
+              names or other identifying details.
             </p>
           </section>
           <p className="m-0 px-1 text-[10px] leading-relaxed text-soft">

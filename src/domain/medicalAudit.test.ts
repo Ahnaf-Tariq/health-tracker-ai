@@ -55,8 +55,13 @@ describe("2026-10-15 medical audit regressions", () => {
   it.each([50, 55, 59])(
     "does not call %d bpm the usual 60–100 reference",
     (bpm) => {
-      expect(classifyHeartRate(bpm, false).category).toBe("Low reading");
-      expect(classifyHeartRate(bpm, true).category).toBe("Low reading");
+      expect(classifyHeartRate(bpm, false).category).toBe(
+        "Below 60, often normal",
+      );
+      expect(classifyHeartRate(bpm, true).category).toBe(
+        "Below 60, often normal",
+      );
+      expect(classifyHeartRate(bpm, false).category).not.toBe("Usual range");
     },
   );
   it("does not label hypotension as normal or reassuring", () => {

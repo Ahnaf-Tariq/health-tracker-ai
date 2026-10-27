@@ -6,6 +6,7 @@ import {
   classifyBP,
   classifyHeartRate,
   classifySleep,
+  hemoglobinReferenceNote,
   getSafetyFlags,
   waistHeightRatio,
 } from "./rules";
@@ -184,9 +185,21 @@ describe("sleep and heart-rate boundaries", () => {
     expect(classifySleep(hours).category).toBe(expected);
   });
   it.each([
+    [7, "Recommended range"],
+    [8, "Recommended range"],
+    [8.01, "Long"],
+    [9, "Long"],
+  ] as const)("age 65 sleep %s hours", (hours, expected) => {
+    expect(classifySleep(hours, 65).category).toBe(expected);
+  });
+  it("keeps 9 hours in range for ages 18–64", () => {
+    expect(classifySleep(9, 64).category).toBe("Recommended range");
+  });
+  it.each([
     [49, "Low reading"],
-    [50, "Low reading"],
-    [59, "Low reading"],
+    [50, "Below 60, often normal"],
+    [56, "Below 60, often normal"],
+    [59, "Below 60, often normal"],
     [60, "Usual range"],
     [100, "Usual range"],
     [101, "High reading"],
@@ -196,6 +209,29 @@ describe("sleep and heart-rate boundaries", () => {
   it("softens a low heart rate note for an athletic/muscular person", () => {
     expect(classifyHeartRate(45, true).note).toContain("regular training");
   });
+});
+
+describe("hemoglobin screening note", () => {
+  it.each([
+    [12.9, "male", "no", true],
+    [11.9, "female", "no", true],
+    [10.9, "female", "pregnant", true],
+    [13, "male", "no", false],
+    [12, "female", "no", false],
+    [11, "female", "pregnant", false],
+    [10, "prefer-not-to-say", "no", false],
+    [10, "prefer-not-to-say", "pregnant", false],
+  ] as const)(
+    "returns a cautious note for %s g/dL, sex %s, pregnancy %s",
+    (value, sex, pregnancy, expectsNote) => {
+      const note = hemoglobinReferenceNote(value, sex, pregnancy);
+      expect(Boolean(note)).toBe(expectsNote);
+      if (note) {
+        expect(note).toContain("may be below the usual reference range");
+        expect(note).toContain("worth discussing with a doctor");
+      }
+    },
+  );
 });
 
 describe("urgent symptoms, pregnancy and care nudges", () => {
@@ -368,5 +404,110 @@ describe("validation, local score and untrusted notes", () => {
   it("includes the exact full disclaimer in copy/PDF source text", async () => {
     const { buildReportText } = await import("../lib/summary");
     expect(buildReportText(buildWellnessReport(base))).toContain(DISCLAIMER);
+  });
+});
+
+describe("accuracy regressions: 19-year-old, 165 cm, 45 kg, BP 140/67, 5 h sleep, HR 56", () => {
+  const person = modified({
+    age: 19,
+    sexAtBirth: "male",
+    heightCm: 165.1,
+    weightKg: 45,
+    systolic: 140,
+    diastolic: 67,
+    bloodPressureReadings: [{ systolic: 140, diastolic: 67 }],
+    bpReadingCount: 1,
+    sleepHours: 5,
+    restingHeartRate: 56,
+  });
+
+  it("classifies each metric against its reference", () => {
+    const report = buildWellnessReport(person);
+    expect(report.bmi.category).toBe("Underweight");
+    expect(report.bmi.value).toBeCloseTo(16.51, 2);
+    expect(report.bp.category).toBe("Stage 2");
+    expect(report.sleep.category).toBe("Short");
+    expect(report.heartRate?.category).toBe("Below 60, often normal");
+  });
+  it("recommends a doctor conversation and explains the isolated high top number", () => {
+    const report = buildWellnessReport(person);
+    expect(report.status).toBe("Talk to a doctor soon");
+    expect(report.bp.note).toContain("isolated systolic");
+    expect(report.bp.note).toContain("repeat it on separate days");
+  });
+  it("describes moderate thinness and the age 18–19 BMI caveat", () => {
+    const report = buildWellnessReport(person);
+    expect(report.bmi.note).toContain("moderate thinness");
+    expect(report.bmi.note).toContain("BMI-for-age");
+  });
+  it("lists low weight and a repeat BP check among the doctor topics", () => {
+    const report = buildWellnessReport(person);
+    expect(report.doctorQuestions.join(" ")).toMatch(/weight healthy/);
+    expect(report.doctorQuestions.join(" ")).toMatch(/persistently high/);
+    expect(report.fatigueReasons.join(" ")).toMatch(/underweight/);
+  });
+  it("does not treat a resting rate of 56 as a tiredness reason", () => {
+    const report = buildWellnessReport(person);
+    expect(report.fatigueReasons.join(" ")).not.toMatch(/resting heart rate/);
+  });
+  it("never gives weight-loss, calorie or diet-target advice", () => {
+    const report = buildWellnessReport(person);
+    const text = [report.bmi.tip, ...report.actions].join(" ").toLowerCase();
+    expect(text).not.toMatch(
+      /weight loss|lose weight|calorie target|\d+\s*kcal/,
+    );
+  });
+});
+
+describe("status now reflects BMI and heart-rate context", () => {
+  it("flags underweight even when every other check is normal", () => {
+    const report = buildWellnessReport(
+      modified({ weightKg: 52, heightCm: 175 }),
+    );
+    expect(report.bmi.category).toBe("Underweight");
+    expect(report.status).toBe("Some things to watch");
+  });
+  it("recommends a doctor conversation for severe thinness (BMI below 16)", () => {
+    const report = buildWellnessReport(
+      modified({ weightKg: 45, heightCm: 175 }),
+    );
+    expect(report.bmi.value).toBeLessThan(16);
+    expect(report.status).toBe("Talk to a doctor soon");
+  });
+  it.each([
+    [17.5, "mild thinness"],
+    [16.5, "moderate thinness"],
+    [15.5, "severe thinness"],
+  ] as const)("grades BMI %d as %s", (bmi, grade) => {
+    expect(classifyBMI(bmi, 100, "other").note).toContain(grade);
+  });
+  it("flags obesity and non-muscular overweight, but not muscular overweight", () => {
+    expect(buildWellnessReport(modified({ weightKg: 95 })).status).toBe(
+      "Some things to watch",
+    );
+    expect(buildWellnessReport(modified({ weightKg: 85 })).status).toBe(
+      "Some things to watch",
+    );
+    expect(
+      buildWellnessReport(modified({ weightKg: 85, muscularBuild: true }))
+        .status,
+    ).toBe("No automatic flags");
+  });
+  it("does not flag a resting rate of 50–59 on its own", () => {
+    for (const bpm of [50, 56, 59])
+      expect(
+        buildWellnessReport(modified({ restingHeartRate: bpm })).status,
+      ).toBe("No automatic flags");
+  });
+  it("still flags a resting rate below 50 or above 100", () => {
+    for (const bpm of [45, 105])
+      expect(
+        buildWellnessReport(modified({ restingHeartRate: bpm })).status,
+      ).toBe("Some things to watch");
+  });
+  it("adds the isolated-systolic note only when the bottom number is below 90", () => {
+    expect(classifyBP(140, 70).note).toContain("isolated systolic");
+    expect(classifyBP(150, 95).note).not.toContain("isolated systolic");
+    expect(classifyBP(135, 70).note).not.toContain("isolated systolic");
   });
 });

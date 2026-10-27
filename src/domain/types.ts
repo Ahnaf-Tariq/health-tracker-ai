@@ -138,7 +138,11 @@ export interface ValidatedInputs {
 }
 
 export type BPCategory =
-  "Low reading" | "Normal" | "Elevated" | "Stage 1" | "Stage 2";
+  | "Low reading"
+  | "Normal"
+  | "Elevated"
+  | "Stage 1"
+  | "Stage 2";
 export type BMICategory =
   | "Underweight"
   | "Normal"
@@ -148,8 +152,15 @@ export type BMICategory =
   | "High risk"
   | "Not assessed";
 export type SleepCategory =
-  "Short" | "Borderline" | "Recommended range" | "Long";
-export type HRCategory = "Low reading" | "Usual range" | "High reading";
+  | "Short"
+  | "Borderline"
+  | "Recommended range"
+  | "Long";
+export type HRCategory =
+  | "Low reading"
+  | "Below 60, often normal"
+  | "Usual range"
+  | "High reading";
 export type GlucoseCategory =
   | "Low glucose reading"
   | "Very high glucose reading"

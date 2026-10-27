@@ -1,7 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 import { hasSelfHarmConcern } from "../../../domain/privacy";
-import { consumeChatAllowance } from "../../../server/chatLimits";
+import { consumeIpRateLimit } from "../../../server/chatLimits";
+import {
+  consumeUserChatAllowance,
+  loadConversation,
+  verifyFirebaseToken,
+} from "../../../server/firebaseAdmin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -75,31 +80,23 @@ function removePrivateNotes(value: unknown): unknown {
   );
 }
 
-function getMessagesAndContext(body: unknown):
-  | { messages: ChatMessage[]; context: unknown; sessionId: string }
-  | undefined {
-  if (!isRecord(body) || !Array.isArray(body.messages) || !isRecord(body.context)) return;
-  if (
-    typeof body.sessionId !== "string" ||
-    !/^[a-zA-Z0-9_-]{8,80}$/.test(body.sessionId) ||
-    body.messages.length < 1 ||
-    body.messages.length > MAX_MESSAGES
-  ) return;
+function getConversationId(body: unknown) {
+  if (!isRecord(body) || typeof body.conversationId !== "string" || !/^[a-zA-Z0-9_-]{8,80}$/.test(body.conversationId)) return;
+  return body.conversationId;
+}
 
+function validateStoredMessages(value: unknown): ChatMessage[] | undefined {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_MESSAGES) return;
   const messages: ChatMessage[] = [];
-  let userMessageCount = 0;
-  for (const item of body.messages) {
+  for (const item of value) {
     if (!isRecord(item) || (item.role !== "user" && item.role !== "assistant") || typeof item.content !== "string") return;
     const limit = item.role === "user" ? MAX_USER_MESSAGE_LENGTH : MAX_ASSISTANT_MESSAGE_LENGTH;
     if (!item.content.trim() || item.content.length > limit) return;
-    if (item.role === "user") userMessageCount += 1;
     messages.push({ role: item.role, content: item.content });
   }
-  if (messages.at(-1)?.role !== "user" || userMessageCount > 20) return;
+  if (messages.at(-1)?.role !== "user") return;
 
-  const context = removePrivateNotes(body.context);
-  if (JSON.stringify(context).length > MAX_CONTEXT_BYTES) return;
-  return { messages, context, sessionId: body.sessionId };
+  return messages;
 }
 
 function ipAddress(request: Request) {
@@ -143,6 +140,14 @@ function publicGeminiError(error: unknown) {
 }
 
 export async function POST(request: Request) {
+  let firebaseUser;
+  try {
+    firebaseUser = await verifyFirebaseToken(request);
+  } catch {
+    return jsonError(503, "Chat sign-in verification is not configured yet. Add the Firebase Admin credentials on the server.");
+  }
+  if (!firebaseUser) return jsonError(401, "Please sign in to use saved AI chat.");
+
   let body: unknown;
   try {
     body = await readLimitedJson(request);
@@ -150,22 +155,31 @@ export async function POST(request: Request) {
     return jsonError(error instanceof Error && error.message === "too_large" ? 413 : 400, "Please send a shorter chat request and try again.");
   }
 
-  const parsed = getMessagesAndContext(body);
-  if (!parsed) return jsonError(400, "This chat request is incomplete or too long. Please start a new chat and try again.");
+  const conversationId = getConversationId(body);
+  if (!conversationId) return jsonError(400, "This chat request is incomplete. Please try again.");
 
-  const allowance = consumeChatAllowance(ipAddress(request), parsed.sessionId);
-  if (!allowance.ok) {
-    return allowance.reason === "rate"
-      ? jsonError(429, "You’ve sent several messages in a short time. Please wait a minute before chatting again.")
-      : jsonError(429, "This chat has reached its message limit. Start a new chat to continue.");
+  let savedConversation: Awaited<ReturnType<typeof loadConversation>>;
+  try {
+    savedConversation = await loadConversation(firebaseUser.uid, conversationId);
+  } catch {
+    return jsonError(503, "Your saved chat could not be loaded. Please try again in a moment.");
   }
+  if (savedConversation === undefined) return jsonError(404, "This saved chat could not be found. Return to chat history and open it again.");
+  const messages = validateStoredMessages(savedConversation.messages);
+  if (!messages) return jsonError(400, "This conversation has reached its message limit. Start a new chat to continue.");
+  const context = removePrivateNotes(savedConversation.context);
+  if (JSON.stringify(context).length > MAX_CONTEXT_BYTES) return jsonError(400, "The saved report context is too large to send. Start a new chat and try again.");
 
-  const latestMessage = parsed.messages.at(-1)!.content;
-  if (parsed.messages.some((message) => message.role === "user" && hasSelfHarmConcern(message.content))) {
+  const latestMessage = messages.at(-1)!.content;
+  if (messages.some((message) => message.role === "user" && hasSelfHarmConcern(message.content))) {
     return jsonError(409, "support_required");
   }
 
-  if (isEmergencyMessage(latestMessage) || hasEmergencyContext(parsed.context)) {
+  if (!consumeIpRateLimit(ipAddress(request))) {
+    return jsonError(429, "You’ve sent several messages in a short time. Please wait a minute before chatting again.");
+  }
+
+  if (isEmergencyMessage(latestMessage) || hasEmergencyContext(context)) {
     const response = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(sse({
@@ -191,9 +205,26 @@ export async function POST(request: Request) {
     return jsonError(503, "The AI guide is not configured yet. Add GEMINI_API_KEY and GEMINI_MODEL on the server, then restart the app.");
   }
 
+  let allowance: Awaited<ReturnType<typeof consumeUserChatAllowance>>;
+  try {
+    allowance = await consumeUserChatAllowance(firebaseUser);
+  } catch {
+    return jsonError(503, "Your chat allowance could not be checked. Please try again in a moment.");
+  }
+  if (!allowance.ok) {
+    return NextResponse.json(
+      {
+        error: "You’ve used all 10 AI messages in this 5-hour window. Your allowance will restore automatically.",
+        chats_left: 0,
+        restore_time: new Date(allowance.restoreTime).toISOString(),
+      },
+      { status: 429 },
+    );
+  }
+
   const ai = new GoogleGenAI({ apiKey });
-  const contextText = JSON.stringify(parsed.context);
-  const transcript = parsed.messages
+  const contextText = JSON.stringify(context);
+  const transcript = messages
     .map(({ role, content }) => `${role === "user" ? "User" : "Assistant"}: ${content}`)
     .join("\n");
   let upstream;
@@ -245,6 +276,8 @@ export async function POST(request: Request) {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
+      "X-Chat-Chats-Left": String(allowance.chatsLeft),
+      "X-Chat-Restore-Time": new Date(allowance.restoreTime).toISOString(),
     },
   });
 }

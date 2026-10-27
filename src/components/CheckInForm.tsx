@@ -466,7 +466,6 @@ export function CheckInForm({ onReport, onSupport, onPrivacy }: Props) {
                     "bloodType",
                     "Blood type",
                     [
-                      { value: "", label: "Skip this detail" },
                       { value: "unknown", label: "I don’t know my blood type" },
                       ...BLOOD_TYPES.map((value) => ({
                         value,
@@ -1242,8 +1241,8 @@ export function CheckInForm({ onReport, onSupport, onPrivacy }: Props) {
                   aria-hidden="true"
                 />
               </summary>
-              <div className="grid gap-6 p-5 [&_[data-ui~=form-grid]]:gap-x-5 [&_[data-ui~=form-grid]]:gap-y-5">
-                <div className="sm:col-span-2">
+              <div className="space-y-6 p-5">
+                <div>
                   <p>
                     These ranges are screening context, not a diagnosis. Do not
                     use a home glucose meter result for lab-range
@@ -1258,7 +1257,7 @@ export function CheckInForm({ onReport, onSupport, onPrivacy }: Props) {
                   </a>
                 </div>
                 <div
-                  className="grid grid-cols-1 gap-x-6 gap-y-6 sm:grid-cols-2"
+                  className="grid grid-cols-1 gap-x-6 gap-y-6 md:grid-cols-2"
                   data-ui="form-grid"
                 >
                   {selectControl(
@@ -1383,7 +1382,7 @@ export function CheckInForm({ onReport, onSupport, onPrivacy }: Props) {
                     optional: true,
                     placeholder: "Optional",
                   })}
-                  <div className="flex items-end gap-3 [&>[data-ui~=field]]:min-w-0 [&>[data-ui~=field]]:flex-1">
+                  <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(112px,145px)] items-end gap-3">
                     <FormField
                       id="cholesterol"
                       label="Cholesterol"
@@ -1400,7 +1399,7 @@ export function CheckInForm({ onReport, onSupport, onPrivacy }: Props) {
                     </FormField>
                     <SelectField
                       id="cholesterolUnit"
-                      className="w-[145px]! shrink-0 max-[561px]:w-[130px]!"
+                      className="w-full! min-w-0!"
                       value={form.cholesterolUnit}
                       options={[
                         { value: "mg/dL", label: "mg/dL" },
@@ -1411,7 +1410,7 @@ export function CheckInForm({ onReport, onSupport, onPrivacy }: Props) {
                     />
                   </div>
                 </div>
-                <p className="text-[#53655d] text-[11px] leading-[1.6] mt-[3px] mb-0 mx-0">
+                <p className="m-0 text-[11px] leading-[1.6] text-muted">
                   Known diabetes, pregnancy, anemia, or personal treatment goals
                   can change what a test means. One result cannot diagnose a
                   condition; your clinician may repeat or confirm testing.
@@ -1419,17 +1418,17 @@ export function CheckInForm({ onReport, onSupport, onPrivacy }: Props) {
               </div>
             </details>
 
-            <div className="mt-8 border-t border-line pt-7 text-center">
+            <div className="mt-6 text-center">
               {Object.keys(errors).length > 0 ? (
                 <p
-                  className="flex items-start bg-amber-bg rounded-[12px] text-amber text-[12px] leading-[1.5] mt-2.5 mb-0 mx-0 px-[15px] py-3.5 gap-2.5"
+                  className="flex items-start bg-amber-bg rounded-md text-amber text-[12px] leading-[1.5] mt-0 mb-2 mx-0 px-[15px] py-2.5 gap-2.5"
                   role="alert"
                 >
                   Please check the highlighted fields above.
                 </p>
               ) : null}
               <button
-                className="group inline-flex min-h-12 min-w-[250px] items-center justify-center gap-3 rounded-[9px] bg-teal px-7 text-[13px] font-medium text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-teal-strong disabled:translate-y-0 dark:bg-teal-strong"
+                className="group inline-flex min-h-12 min-w-[200px] items-center justify-center gap-2.5 rounded-[9px] bg-teal px-5 text-[13px] font-medium text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-teal-strong disabled:translate-y-0 dark:bg-teal-strong"
                 data-ui="button button-primary"
                 type="submit"
                 disabled={submitting}
@@ -1452,7 +1451,7 @@ export function CheckInForm({ onReport, onSupport, onPrivacy }: Props) {
               <p className="text-soft text-[11px] mt-3 mb-0 leading-[1.5] mx-0">
                 {submitting
                   ? "Your answers stay in this browser."
-                  : "No account needed · AI chat is optional and separate"}
+                  : "No account needed to complete this check-in. Sign in for saved actions and chat"}
               </p>
             </div>
           </form>

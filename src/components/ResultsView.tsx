@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import {
   Activity,
@@ -18,14 +18,18 @@ import {
   Waves,
 } from "lucide-react";
 import type { WellnessReport } from "../domain/types";
+import { calculateCheckInScore } from "../domain/checkInScore";
 import { DISCLAIMER } from "../domain/constants";
 import { BLOOD_TYPE_SOURCES } from "../domain/bloodType";
 import { formatMeasurement } from "../domain/format";
+import { hemoglobinReferenceNote } from "../domain/rules";
 import { CLINICAL_SOURCES, glucoseTestLabel } from "../domain/clinicalGuidance";
 import { buildReportText } from "../lib/summary";
 import { downloadReportPDF, preloadReportPDF } from "../lib/pdf";
 import { CheckInProgress } from "./CheckInProgress";
 import { MetricCard } from "./MetricCard";
+import { useAuth } from "./AppProviders";
+import { useRouter } from "next/navigation";
 
 interface Props {
   report: WellnessReport;
@@ -33,40 +37,6 @@ interface Props {
   onOpenChat: () => void;
 }
 const number = formatMeasurement;
-
-function getScreeningSnapshot(report: WellnessReport) {
-  const checks = [
-    {
-      assessed: report.bp.category !== "Not assessed",
-      inRange: report.bp.category === "Normal",
-    },
-    {
-      assessed: report.bmi.category !== "Not assessed",
-      inRange: report.bmi.category === "Normal",
-    },
-    {
-      assessed: true,
-      inRange: report.sleep.category === "Recommended range",
-    },
-    {
-      assessed: report.heartRate !== undefined,
-      inRange: report.heartRate?.category === "Usual range",
-    },
-    {
-      assessed:
-        report.glucose !== undefined &&
-        report.glucose.category !== "Shown without interpretation",
-      inRange: report.glucose?.category === "Below common screening cutoff",
-    },
-  ].filter((check) => check.assessed);
-
-  const inRange = checks.filter((check) => check.inRange).length;
-  const total = checks.length;
-  const percentage = total === 0 ? 0 : Math.round((inRange / total) * 100);
-  const tone = percentage < 50 ? "red" : percentage < 85 ? "amber" : "green";
-
-  return { inRange, total, percentage, tone };
-}
 
 function StatusMark({
   label,
@@ -94,12 +64,76 @@ function StatusMark({
 }
 
 export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
+  const router = useRouter();
+  const { user, authReady } = useAuth();
   const [copyNotice, setCopyNotice] = useState("");
   const [pdfNotice, setPdfNotice] = useState("");
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [pendingAction, setPendingAction] = useState<
+    "copy" | "pdf" | "print" | "chat" | null
+  >(null);
+  const resumedAction = useRef(false);
   const prefersReducedMotion = useReducedMotion() ?? false;
   const { inputs: i, safety } = report;
-  const screeningSnapshot = getScreeningSnapshot(report);
+  const hemoglobinNote =
+    i.hemoglobin === undefined
+      ? undefined
+      : hemoglobinReferenceNote(
+          i.hemoglobin,
+          i.sexAtBirth,
+          i.pregnantOrBreastfeeding,
+        );
+  function gateAction(
+    action: "copy" | "pdf" | "print" | "chat",
+    run: () => void,
+  ) {
+    if (!authReady) {
+      setPendingAction(action);
+      return;
+    }
+    if (!user) {
+      router.push(
+        `/login?next=${encodeURIComponent(`/check-in?resume=${action}`)}`,
+      );
+      return;
+    }
+    run();
+  }
+
+  useEffect(() => {
+    if (!authReady) return;
+    const action =
+      pendingAction ??
+      new URLSearchParams(window.location.search).get("resume");
+    if (
+      !action ||
+      !["copy", "pdf", "print", "chat"].includes(action) ||
+      resumedAction.current
+    )
+      return;
+    resumedAction.current = true;
+    setPendingAction(null);
+    if (!user) {
+      router.push(
+        `/login?next=${encodeURIComponent(`/check-in?resume=${action}`)}`,
+      );
+      return;
+    }
+    router.replace("/check-in", { scroll: false });
+    if (action === "chat") onOpenChat();
+    else if (action === "copy") void copySummary();
+    else if (action === "pdf") void downloadPDF();
+    else window.setTimeout(() => window.print(), 0);
+    // The resume action is intentionally consumed once after login.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authReady, user, pendingAction]);
+  const checkInScore = calculateCheckInScore(report);
+  const scoreColor =
+    checkInScore.value >= 85
+      ? "#3f8d6d"
+      : checkInScore.value >= 60
+        ? "#c4872f"
+        : "#c4544c";
   const urgent = safety.urgent;
   const bpTone =
     report.bp.category === "Not assessed"
@@ -120,7 +154,9 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
         ? "watch"
         : "watch";
   const hrTone =
-    !report.heartRate || report.heartRate.category === "Usual range"
+    !report.heartRate ||
+    report.heartRate.category === "Usual range" ||
+    report.heartRate.category === "Below 60, often normal"
       ? "calm"
       : "watch";
   const glucoseTone =
@@ -161,7 +197,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
       setCopyNotice(
         copied
           ? "Your summary was copied."
-          : "Copy wasnâ€™t available. You can still print or save the report.",
+          : "Copy wasn’t available. You can still print or save the report.",
       );
     }
     window.setTimeout(() => setCopyNotice(""), 4500);
@@ -170,11 +206,11 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
   async function downloadPDF() {
     if (pdfBusy) return;
     setPdfBusy(true);
-    setPdfNotice("Preparing your reportâ€¦");
+    setPdfNotice("Preparing your report…");
     try {
       await downloadReportPDF(report);
       setPdfNotice(
-        "Your PDF was prepared. If you donâ€™t see it in Downloads, use Print / Save as PDF to save a copy.",
+        "Your PDF was prepared. If you don’t see it in Downloads, use Print / Save as PDF to save a copy.",
       );
     } catch {
       setPdfNotice(
@@ -206,7 +242,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
         </h1>
         <p className="text-[14px] leading-[1.7] text-muted max-w-155">
           One or more details you entered can need urgent attention. This tool
-          canâ€™t assess an emergency or tell you the cause.
+          can’t assess an emergency or tell you the cause.
         </p>
         <ul className="grid text-[#713832] bg-red-bg rounded-[13px] pr-5.5 pl-10.5 text-[13px] leading-[1.55] py-[19px] border border-solid border-[#f0d6d1] gap-2.5 dark:text-[#f1c2ba] dark:bg-[#382624] dark:border-[#5b3530]">
           {safety.urgentReasons.map((reason) => (
@@ -267,7 +303,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
               className="mb-1 block text-[9px] font-semibold uppercase leading-relaxed tracking-[0.13em] text-teal"
               data-ui="eyebrow"
             >
-              PLEASE READ FIRST Â· VERY HIGH READING
+              PLEASE READ FIRST · VERY HIGH READING
             </span>
             <h2 id="bp-critical-title">
               Repeat once, then get medical advice if it stays high.
@@ -295,7 +331,6 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
           </span>
           <span>YOUR CHECK-IN</span>
           <span className="h-px w-11.5 bg-line" data-ui="step-line" />
-          <span>PRIVATE ON THIS DEVICE</span>
         </div>
         <StatusMark label={report.status} />
       </div>
@@ -323,28 +358,65 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
           </p>
           <p className="flex items-start text-muted text-[13px]! leading-[1.55]! m-0! gap-[7px] [&_svg]:flex-none [&_svg]:text-teal [&_svg]:mt-px">
             <ShieldAlert size={18} aria-hidden="true" />
-            Educational context only. This check-in cannot measure health or
-            energy, diagnose illness, or rule out an emergency.
+            Educational context only. The estimate below summarizes entered
+            screening checks; it cannot measure overall health, diagnose
+            illness, or rule out an emergency.
           </p>
+
+          <div className="flex flex-wrap gap-2 max-sm:w-full max-sm:[&_button]:flex-1 mt-6">
+            <button
+              type="button"
+              onClick={() => gateAction("copy", () => void copySummary())}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line px-3 text-xs font-semibold text-teal hover:border-teal"
+            >
+              <Clipboard size={15} />
+              Copy
+            </button>
+            <button
+              type="button"
+              onClick={() => gateAction("print", () => window.print())}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line px-3 text-xs font-semibold text-teal hover:border-teal"
+            >
+              <Printer size={15} />
+              Print
+            </button>
+            <button
+              type="button"
+              onClick={() => gateAction("pdf", () => void downloadPDF())}
+              disabled={pdfBusy}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line px-3 text-xs font-semibold text-teal hover:border-teal disabled:opacity-50"
+            >
+              <Download size={15} />
+              Download PDF
+            </button>
+            <button
+              type="button"
+              onClick={() => gateAction("chat", onOpenChat)}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-teal px-4 text-xs font-semibold text-white hover:bg-teal-strong"
+            >
+              <Sparkles size={15} />
+              Talk with AI
+            </button>
+          </div>
         </div>
-        <aside className="flex flex-col items-center rounded-xl bg-teal-tint p-6 text-center">
-          <span className="mb-4 text-[10px] font-semibold uppercase tracking-[0.14em] text-teal">
-            Screening snapshot
+        <aside className="rounded-xl bg-teal-tint p-5 sm:p-6">
+          <span className="mb-3 block text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-teal">
+            Check-in estimate
           </span>
           <div
-            className="relative mb-4 grid size-36 place-items-center"
+            className="relative mx-auto mb-4 size-44"
             role="img"
-            aria-label={`${screeningSnapshot.percentage}% of assessed screening indicators are in the tool's usual ranges`}
+            aria-label={`Rules-based check-in estimate: ${checkInScore.value} out of 100, based on ${checkInScore.assessedChecks} checks`}
           >
             <svg
-              className="size-full -rotate-90"
+              className="absolute inset-0 size-full -rotate-90"
               viewBox="0 0 120 120"
               aria-hidden="true"
             >
               <circle
                 cx="60"
                 cy="60"
-                r="50"
+                r="52"
                 fill="none"
                 stroke="var(--line)"
                 strokeWidth="10"
@@ -352,39 +424,58 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
               <circle
                 cx="60"
                 cy="60"
-                r="50"
+                r="52"
                 fill="none"
-                stroke={
-                  screeningSnapshot.tone === "red"
-                    ? "#c4554c"
-                    : screeningSnapshot.tone === "amber"
-                      ? "#bb8a35"
-                      : "#348b69"
-                }
+                stroke={scoreColor}
                 strokeWidth="10"
                 strokeLinecap="round"
-                strokeDasharray={`${(screeningSnapshot.percentage / 100) * 314.16} 314.16`}
-                className="transition-[stroke-dasharray] duration-700 ease-out"
+                strokeDasharray={2 * Math.PI * 52}
+                strokeDashoffset={
+                  2 * Math.PI * 52 * (1 - checkInScore.value / 100)
+                }
+                className="transition-[stroke-dashoffset] duration-700 ease-out"
               />
             </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <span className="font-display text-[38px] leading-none text-ink">
-                {screeningSnapshot.percentage}%
-              </span>
-              <span className="mt-1 text-[11px] font-medium text-muted">
-                in usual range
-              </span>
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+              <div
+                className="font-display text-[40px] leading-none"
+                style={{ color: scoreColor }}
+              >
+                {checkInScore.value}%
+              </div>
+              <div className="mt-1 text-[10px] text-muted">estimate</div>
             </div>
           </div>
-          <h2 className="mb-2 font-display text-[25px] leading-tight">
-            {screeningSnapshot.inRange} of {screeningSnapshot.total} checks in
-            range
+          <h2 className="mb-1 text-center font-display text-[21px] leading-tight">
+            Based on {checkInScore.assessedChecks} entered{" "}
+            {checkInScore.assessedChecks === 1 ? "check" : "checks"}
           </h2>
-          <p className="mb-0 text-[12px] leading-relaxed text-muted">
-            Based only on the screening indicators assessed here. This is not an
-            overall health score or diagnosis; symptoms and your clinician’s
-            advice take priority.
+          <p className="mb-3 text-center text-[11px] leading-relaxed text-muted">
+            A simple average of interpretable checks. This is not a percentage
+            of how healthy you are; missing optional checks are left out.
           </p>
+          <details className="border-t border-line/70 pt-3 text-[11px] leading-relaxed text-muted">
+            <summary className="cursor-pointer font-semibold text-teal">
+              How this estimate works
+            </summary>
+            <p className="mb-0 mt-2">
+              Each included check gets 0–100 points from a fixed scoring band
+              for its measured value. Checks count equally, and a very high
+              blood
+              pressure or a low/very high glucose reading caps the estimate at
+              60. This scoring method is not clinically validated and the
+              percentage is not your percentage of health. Review each result
+              and its context below.
+            </p>
+            <ul className="mb-0 mt-2 list-none space-y-1 p-0">
+              {checkInScore.breakdown.map((item) => (
+                <li key={item.label} className="flex justify-between gap-3">
+                  <span>{item.label}</span>
+                  <span>{item.points} / 100</span>
+                </li>
+              ))}
+            </ul>
+          </details>
         </aside>
       </motion.section>
 
@@ -409,7 +500,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             <span className="rounded-full bg-teal-tint px-3 py-1 text-[12px] font-semibold text-teal">
               {report.bloodType.value === "unknown"
                 ? "Blood type unknown"
-                : `Blood type ${report.bloodType.value.replace("-", "âˆ’")}`}
+                : `Blood type ${report.bloodType.value.replace("-", "−")}`}
             </span>
             <h2 className="font-display text-[27px] text-ink">
               Your blood type, in context
@@ -432,7 +523,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             target="_blank"
             rel="noreferrer"
           >
-            Read NHS blood-group guidance â†—
+            Read NHS blood-group guidance ↗
           </a>
         </section>
       ) : null}
@@ -457,10 +548,10 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             </span>
             <h2 id="care-title">Consider checking in with a doctor</h2>
             <p>
-              It may help to talk through how youâ€™ve been feeling and what
-              these readings mean for you. Some checks doctors may consider
-              include a blood count, thyroid, or blood sugar. This is a
-              conversation starterâ€”not a conclusion.
+              It may help to talk through how you’ve been feeling and what these
+              readings mean for you. Some checks doctors may consider include a
+              blood count, thyroid, or blood sugar. This is a conversation
+              starter—not a conclusion.
             </p>
           </div>
         </section>
@@ -469,7 +560,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
       {i.conditions.length > 0 || i.medication === "yes" ? (
         <p className="flex items-start text-muted text-[13px] leading-[1.6] bg-teal-tint rounded-[13px] mx-0 my-[15px] px-4.5 py-4 gap-3 [&_svg]:flex-none [&_svg]:text-teal dark:bg-[#203a30]">
           <HeartPulse size={18} aria-hidden="true" />
-          Your doctorâ€™s personal targets may differ. Some medicines can also
+          Your doctor’s personal targets may differ. Some medicines can also
           change blood-pressure or heart-rate readings.
         </p>
       ) : null}
@@ -490,9 +581,9 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             </span>
             <h2>Be gentle with yourself</h2>
             <p>
-              Worries about food or your body can feel heavy. You donâ€™t have
-              to manage that alone; consider talking with a health professional
-              or someone you trust. This report does not set diet, weight, or
+              Worries about food or your body can feel heavy. You don’t have to
+              manage that alone; consider talking with a health professional or
+              someone you trust. This report does not set diet, weight, or
               calorie targets.
             </p>
           </div>
@@ -599,7 +690,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             <strong>Test entered:</strong>{" "}
             {glucoseTestLabel(i.glucose.testType)}
             {i.glucose.testType === "fasting"
-              ? ` Â· ${i.glucose.fastingConfirmed ? "8+ hour fast confirmed" : "fasting not confirmed"}`
+              ? ` · ${i.glucose.fastingConfirmed ? "8+ hour fast confirmed" : "fasting not confirmed"}`
               : ""}
             .{" "}
             <a href={CLINICAL_SOURCES[2].url} target="_blank" rel="noreferrer">
@@ -619,7 +710,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
                 Waist-to-height ratio:{" "}
                 {formatMeasurement(report.waistToHeightRatio, 3)}
               </strong>{" "}
-              Â·{" "}
+              ·{" "}
               {report.waistToHeightRatio >= 0.5
                 ? "This is at or above 0.5, a signal that can be worth discussing. Waist measurements can add context beyond BMI."
                 : "This is one way to put waist size into context. It is not a diagnosis."}
@@ -654,11 +745,16 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             className="mb-1 block text-[9px] font-semibold uppercase leading-relaxed tracking-[0.13em] text-teal"
             data-ui="eyebrow"
           >
-            OTHER TEST RESULTS YOU ENTERED Â· SHOWN AS SUPPLIED
+            OTHER TEST RESULTS YOU ENTERED · LIMITED CONTEXT
           </span>
           <div className="flex flex-wrap mx-0 my-3 gap-[9px] [&_span]:bg-paper [&_span]:rounded-[10px] [&_span]:text-[12px] [&_span]:px-[13px] [&_span]:py-2.5 [&_span]:border [&_span]:border-solid [&_span]:border-line">
             {i.hemoglobin !== undefined ? (
-              <span>Hemoglobin: {number(i.hemoglobin)} g/dL</span>
+              <span>
+                Hemoglobin: {number(i.hemoglobin)} g/dL
+                {hemoglobinNote ? (
+                  <small className="mt-1 block">{hemoglobinNote}</small>
+                ) : null}
+              </span>
             ) : null}
             {i.cholesterol ? (
               <span>
@@ -667,8 +763,9 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             ) : null}
           </div>
           <small>
-            These results are not interpreted here. A clinician can help explain
-            them.
+            Hemoglobin uses broad screening cutoffs only when sex and pregnancy
+            context allow; it is not a diagnosis. Cholesterol is shown without
+            interpretation. A clinician can help explain these results.
           </small>
         </section>
       ) : null}
@@ -790,7 +887,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             <strong>How this works &amp; sources</strong>
             <small>
               Fixed rules explain the check-in; optional AI chat is separate. No
-              diagnosis or health score.
+              diagnosis; the percentage is an unvalidated estimate.
             </small>
           </span>
           <ChevronDown size={21} aria-hidden="true" />
@@ -804,7 +901,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             common screening ranges. Optional AI chat is separate and is used
             only when you choose to send a message. Blood-sugar ranges apply
             only to eligible laboratory tests and are not a diagnosis. Your
-            clinicianâ€™s personal targets may be different. Opening a source
+            clinician’s personal targets may be different. Opening a source
             sends no check-in values; it opens the public information page.
           </p>
           <ul>
@@ -816,7 +913,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
                   rel="noreferrer"
                   aria-label={`${source.name} (opens in a new tab)`}
                 >
-                  {source.name} <span aria-hidden="true">â†—</span>
+                  {source.name} <span aria-hidden="true">↗</span>
                 </a>
               </li>
             ))}
@@ -831,16 +928,16 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
           </span>
           <div>
             <span className="mb-1 block text-[9px] font-semibold uppercase tracking-[0.13em] text-teal">
-              OPTIONAL · ASK A FOLLOW-UP
+              OPTIONAL � ASK A FOLLOW-UP
             </span>
             <h2 className="m-0 font-display text-[25px] font-normal leading-tight tracking-[-0.025em] text-ink">
               Want to talk through your results?
             </h2>
             <p className="mb-0 mt-2 text-[12px] leading-relaxed text-muted">
               Ask an AI wellness guide about your report, everyday habits, or
-              questions for your doctor. Your check-in and chat are sent to
-              Google Gemini only when you send a message; HealthTracker does not
-              save them.
+              questions for your doctor. Report-based conversations and messages
+              are saved to your Firebase account. Messages and report context
+              are sent to Google Gemini when you send a message.
             </p>
           </div>
         </div>
@@ -848,7 +945,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
           className="inline-flex min-h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-teal bg-teal px-5 py-3 text-[12px] font-semibold text-white transition hover:bg-teal-strong"
           data-ui="button button-primary"
           type="button"
-          onClick={onOpenChat}
+          onClick={() => gateAction("chat", onOpenChat)}
         >
           <Sparkles size={17} aria-hidden="true" /> Talk with the AI guide
         </button>
@@ -863,8 +960,9 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             KEEP A COPY ON YOUR DEVICE
           </span>
           <p>
-            HealthTracker does not save this check-in or any AI chat. Choose
-            PDF, print, or copy to keep a local copy.
+            Your check-in report stays in this browser unless you attach it to a
+            saved AI conversation. Copy, print, and PDF actions require an
+            account and create a local copy.
           </p>
         </div>
         <div className="flex flex-wrap gap-2 max-sm:w-full max-sm:[&_button]:w-full">
@@ -872,7 +970,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             className="border-line bg-panel text-teal hover:border-teal inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border px-5 py-2.5 text-[12px] font-medium transition-all hover:-translate-y-0.5 disabled:translate-y-0 print:hidden"
             data-ui="button"
             type="button"
-            onClick={copySummary}
+            onClick={() => gateAction("copy", () => void copySummary())}
           >
             <Clipboard size={19} />
             Copy summary
@@ -881,7 +979,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             className="border-line bg-panel text-teal hover:border-teal inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border px-5 py-2.5 text-[12px] font-medium transition-all hover:-translate-y-0.5 disabled:translate-y-0 print:hidden"
             data-ui="button"
             type="button"
-            onClick={() => window.print()}
+            onClick={() => gateAction("print", () => window.print())}
           >
             <Printer size={19} />
             Print / Save as PDF
@@ -890,7 +988,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             className="border-teal bg-teal text-white hover:bg-teal-strong dark:bg-teal-strong inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border px-5 py-2.5 text-[12px] font-medium transition-all hover:-translate-y-0.5 disabled:translate-y-0 print:hidden"
             data-ui="button button-primary"
             type="button"
-            onClick={downloadPDF}
+            onClick={() => gateAction("pdf", () => void downloadPDF())}
             disabled={pdfBusy}
             aria-busy={pdfBusy}
           >
@@ -902,7 +1000,7 @@ export function ResultsView({ report, onStartOver, onOpenChat }: Props) {
             ) : (
               <Download size={19} />
             )}
-            {pdfBusy ? "Preparing PDFâ€¦" : "Download report (PDF)"}
+            {pdfBusy ? "Preparing PDF…" : "Download report (PDF)"}
           </button>
         </div>
       </div>

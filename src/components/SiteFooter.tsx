@@ -98,9 +98,9 @@ export function SiteFooter({
                 PERSONAL. PRIVATE. YOURS.
               </h3>
               <p className="mb-3 text-[12px] leading-[1.9] text-[#b5cbc3]">
-                No account or health-data storage by HealthTracker.
+                Check-ins work without an account. Firebase saves your profile and chat history after sign-in.
                 <br />
-                Optional chat sends context to Google Gemini.
+                Chat messages and attached report context go to Google Gemini when sent.
               </p>
               <button
                 type="button"

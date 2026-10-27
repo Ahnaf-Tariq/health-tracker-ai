@@ -32,7 +32,7 @@ const instrumentSerif = localFont({
 export const metadata: Metadata = {
   title: "Health Tracker — Your private check-in",
   description:
-    "A private, plain-language health check-in with transparent, rules-based explanations. Optional AI chat sends your report and messages to Google Gemini only when you choose to use it; HealthTracker does not save them.",
+    "A private, plain-language health check-in with transparent, rules-based explanations. Optional account-based chat history is saved in Firebase; messages and attached report context are sent to Google Gemini when you chat.",
   icons: { icon: "/pulse-mark.svg" },
 };
 
@@ -46,7 +46,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       lang="en"
       className={`${dmSans.variable} ${instrumentSerif.variable} min-w-80 scroll-smooth font-sans text-base font-normal antialiased scheme-light selection:bg-[#cde5da] selection:text-[#203533] dark:scheme-dark [font-synthesis:none] [text-rendering:optimizeLegibility] motion-reduce:scroll-auto [&_*]:motion-reduce:animate-none [&_*]:motion-reduce:transition-none`}
     >
-      <body className="m-0 min-w-80 bg-paper text-base leading-[1.6] text-ink print:bg-white print:text-[#1e302b]">
+      <body
+        suppressHydrationWarning
+        className="m-0 min-w-80 bg-paper text-base leading-[1.6] text-ink print:bg-white print:text-[#1e302b]"
+      >
         <AntdRegistry>
           <AppProviders>{children}</AppProviders>
         </AntdRegistry>

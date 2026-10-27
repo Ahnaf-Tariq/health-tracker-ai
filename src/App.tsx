@@ -1,24 +1,33 @@
 "use client";
 import { SiteFooter } from "./components/SiteFooter";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowLeft, Heart, ShieldCheck } from "lucide-react";
 import { SiteHeader } from "./components/SiteHeader";
 import { CheckInForm } from "./components/CheckInForm";
 import { PrivacyDialog } from "./components/PrivacyDialog";
 import { ResultsView } from "./components/ResultsView";
-import { ChatGuide } from "./components/ChatGuide";
 import type { WellnessReport } from "./domain/types";
+import { useCheckInSession } from "./components/AppProviders";
 
-type Screen = "form" | "results" | "chat" | "support";
+type Screen = "form" | "results" | "support";
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("form");
-  const [report, setReport] = useState<WellnessReport | null>(null);
+  const { report, setReport } = useCheckInSession();
+  const router = useRouter();
+  const [screen, setScreen] = useState<Screen>(() =>
+    report ? "results" : "form",
+  );
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const prefersReducedMotion = useReducedMotion() ?? false;
   const transitionDuration = prefersReducedMotion ? 0 : 0.24;
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("support") === "1")
+      openSupport();
+  }, []);
 
   function startOver() {
     setReport(null);
@@ -47,7 +56,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <SiteHeader  />
+      <SiteHeader />
 
       <div id="main">
         <AnimatePresence mode="wait" initial={false}>
@@ -80,8 +89,7 @@ export default function App() {
                 report={report}
                 onStartOver={startOver}
                 onOpenChat={() => {
-                  setScreen("chat");
-                  window.scrollTo({ top: 0, behavior: "smooth" });
+                  router.push("/chat/new?source=report");
                 }}
               />
             </motion.div>
@@ -136,15 +144,6 @@ export default function App() {
             </motion.main>
           ) : null}
         </AnimatePresence>
-        {report ? (
-          <div className={screen === "chat" ? "min-h-[50vh]" : "hidden"}>
-            <ChatGuide
-              report={report}
-              onBack={() => setScreen("results")}
-              onSupport={openSupport}
-            />
-          </div>
-        ) : null}
       </div>
 
       {screen !== "results" || !report?.safety.urgent ? (

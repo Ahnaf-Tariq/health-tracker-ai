@@ -43,15 +43,10 @@ export function PrivacyDialog({
         </span>
         <h2 id="privacy-title">A private check-in, by design</h2>
         <p>
-          Your report is calculated in this browser. If you choose the AI chat
-          and send a message, your report context and chat messages are sent to
-          Google Gemini so it can reply. Your private safety note is excluded.
-          HealthTracker does not save conversations or health data.
+          Your report is calculated in this browser. You can complete a check-in without an account. Sign-in is required for report actions and chat. Profile details and chat history are saved in your Firebase account. A report snapshot is saved only with a report-based chat. When you send a chat message, the message and any attached report context are sent to Google Gemini. Your private safety note is excluded.
         </p>
         <p>
-          There is no account, database, analytics, or advertising tracker. The
-          chat is not stored by HealthTracker and clears from this page when you
-          leave. Google handles API data under its own terms and privacy policy.
+          Firebase stores your account profile and chat history for this service. HealthTracker does not log message contents. Google handles messages sent for AI responses under its own terms and privacy policy.
         </p>
         <div className="my-5 rounded-xl bg-paper p-5 [&_strong]:text-[12px] [&_strong]:text-teal [&_p]:mt-2 [&_p]:mb-0 [&_p]:text-[12px] [&_p]:leading-[1.85] dark:bg-[#202d27]">
           <strong>Important note</strong>

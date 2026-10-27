@@ -126,7 +126,7 @@ export default async function AboutPage() {
                 icon: Fingerprint,
                 number: "01",
                 title: "Your privacy comes first.",
-                text: "No account or health-data storage by HealthTracker. Your report is calculated in your browser. If you choose the AI chat, your report and messages are sent to Google Gemini and are not saved by HealthTracker.",
+                text: "Check-ins work without an account. After sign-in, Firebase stores your profile and chat history. Report snapshots are saved only with report-based chats; messages and attached context are sent to Google Gemini when you chat.",
               },
               {
                 icon: ScanLine,
@@ -161,7 +161,7 @@ export default async function AboutPage() {
           </div>
         </section>
 
-        <section className="bg-panel px-6 py-14 sm:px-10 lg:px-12">
+        <section className="px-6 py-14 sm:px-10 lg:px-12">
           <div className="relative mx-auto max-w-[1144px] overflow-hidden rounded-2xl bg-[#0b403c] px-7 py-12 text-white sm:px-12 md:py-16">
             <img
               src="/images/wellness-banner.webp"

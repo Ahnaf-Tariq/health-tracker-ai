@@ -4,6 +4,7 @@ import type {
   BPCategory,
   BMICategory,
   FormData,
+  HRCategory,
   MetricClassification,
   SafetyFlags,
   ValidatedInputs,
@@ -53,6 +54,9 @@ export function classifyBP(
   if (category === "Stage 2")
     note =
       "This reading is higher than usual. Please re-check it calmly and discuss repeated readings with a doctor.";
+  if (systolic >= 140 && diastolic < 90 && systolic <= 180)
+    note +=
+      " Only the top number is high (isolated systolic). This pattern is common in young adults and can be temporary after stress, caffeine, poor sleep, or a rushed measurement, so repeat it on separate days before drawing conclusions. Persistently high readings still need clinical confirmation.";
   if (systolic > 180 || diastolic > 120) {
     note =
       "This is a very high reading. If you have no concerning symptoms, wait at least one minute and repeat it. If the repeated reading stays this high, contact a healthcare professional as soon as possible. If you develop chest pain, shortness of breath, back pain, numbness, weakness, confusion, a severe headache, vision changes, or difficulty speaking, call your local emergency number now.";
@@ -90,20 +94,30 @@ export function classifyBMI(
           : bmi < 30
             ? "Overweight"
             : "Obese";
-  const note = adjusted
+  let note = adjusted
     ? "This uses NICE lower BMI action thresholds (23 and 27.5) for the selected Asian background. These are population screening references, not personal risk estimates."
     : "This uses general adult BMI screening thresholds. Some ethnic backgrounds have increased cardiometabolic risk at a lower BMI. BMI alone cannot determine your health.";
-  return {
-    value: bmi,
-    category,
-    note,
-    tip: "Consider the whole picture—how you feel, waist measurement and your clinician’s advice—not BMI alone.",
-  };
+  let tip =
+    "Consider the whole picture—how you feel, waist measurement and your clinician’s advice—not BMI alone.";
+  if (category === "Underweight") {
+    const grade =
+      bmi < 16
+        ? "severe thinness (BMI below 16)"
+        : bmi < 17
+          ? "moderate thinness (BMI 16 to 16.9)"
+          : "mild thinness (BMI 17 to 18.4)";
+    note = `Below 18.5 is underweight; by the WHO grading this falls in ${grade}. Low body weight can go along with low energy, lower immunity and bone or hormone effects, and sometimes has a medical or nutritional cause. ${note}`;
+    tip =
+      "Ask a doctor or dietitian whether your weight is right for you and whether any checks (for example blood count, thyroid, or nutrition status) make sense. Avoid trying to change weight on your own through extreme eating or exercise.";
+  }
+  return { value: bmi, category, note, tip };
 }
 
 export function classifySleep(
   hours: number,
+  age = 18,
 ): MetricClassification<"Short" | "Borderline" | "Recommended range" | "Long"> {
+  const recommendedMax = age >= 65 ? 8 : 9;
   if (hours < 6)
     return {
       value: hours,
@@ -118,26 +132,52 @@ export function classifySleep(
       note: "This is near but a little below the usual adult sleep range.",
       tip: "A small, realistic shift toward a regular sleep window may help.",
     };
-  if (hours <= 9)
+  if (hours <= recommendedMax)
     return {
       value: hours,
       category: "Recommended range",
-      note: "This is within this tool’s broad 7–9-hour adult reference. Recommendations vary with age and circumstances; sleep quality and how you feel also matter.",
+      note: `This is within this tool’s broad 7–${recommendedMax}-hour reference for adults${age >= 65 ? " aged 65 and older" : " aged 18–64"}. Recommendations vary with circumstances; sleep quality and how you feel also matter.`,
       tip: "Keeping a routine that works for you can support rest.",
     };
   return {
     value: hours,
     category: "Long",
-    note: "More than 9 hours is above this tool’s broad adult reference, but can be appropriate during recovery, sleep debt, or in some young adults. Duration alone does not establish a sleep disorder or explain fatigue.",
+    note: `More than ${recommendedMax} hours is above this tool’s broad reference for adults${age >= 65 ? " aged 65 and older" : " aged 18–64"}, but can be appropriate during recovery or in some circumstances. Duration alone does not establish a sleep disorder or explain fatigue.`,
     tip: "If long sleep is new or you still feel tired, consider discussing it with a doctor.",
   };
+}
+
+export function hemoglobinReferenceNote(
+  value: number,
+  sexAtBirth: ValidatedInputs["sexAtBirth"],
+  pregnantOrBreastfeeding: ValidatedInputs["pregnantOrBreastfeeding"],
+): string | undefined {
+  if (sexAtBirth === "prefer-not-to-say") return undefined;
+  const cutoff =
+    pregnantOrBreastfeeding === "pregnant"
+      ? 11
+      : sexAtBirth === "male"
+        ? 13
+        : 12;
+  return value < cutoff
+    ? "This value may be below the usual reference range; worth discussing with a doctor."
+    : undefined;
 }
 
 export function classifyHeartRate(
   bpm: number,
   muscularBuild: boolean,
-): MetricClassification<"Low reading" | "Usual range" | "High reading"> {
-  if (bpm < 60)
+): MetricClassification<HRCategory> {
+  if (bpm >= 50 && bpm < 60)
+    return {
+      value: bpm,
+      category: "Below 60, often normal",
+      note: muscularBuild
+        ? "A resting rate in the 50s is common with regular training. How you feel matters more than the number."
+        : "A resting rate in the 50s is below the usual 60–100 reference but is common and generally not a concern in healthy young adults without symptoms. How you feel matters more than the number.",
+      tip: "No action is usually needed if you feel well. Seek advice if you also have dizziness, fainting, chest discomfort, breathlessness or unusual tiredness, or if your rate suddenly changes.",
+    };
+  if (bpm < 50)
     return {
       value: bpm,
       category: "Low reading",
@@ -309,7 +349,7 @@ export function getSafetyFlags(inputs: SafetyInputs): SafetyFlags {
         systolic >= 120 || diastolic >= 80 || systolic < 90 || diastolic < 60,
     ) ||
     (inputs.restingHeartRate !== undefined &&
-      (inputs.restingHeartRate < 60 || inputs.restingHeartRate > 100));
+      (inputs.restingHeartRate < 50 || inputs.restingHeartRate > 100));
   const bpLow = readings.some(
     ({ systolic, diastolic }) => systolic < 90 || diastolic < 60,
   );
@@ -343,6 +383,7 @@ export function getSafetyFlags(inputs: SafetyInputs): SafetyFlags {
 function doctorQuestions(
   inputs: ValidatedInputs,
   glucose?: MetricClassification<import("./types").GlucoseCategory>,
+  bmiCategory?: BMICategory,
 ): string[] {
   const questions = [
     "Which health checks make sense based on my symptoms and measurements?",
@@ -375,6 +416,18 @@ function doctorQuestions(
     questions.unshift(
       "If my repeated blood-pressure reading stays this high, what should I do next?",
     );
+  if (bmiCategory === "Underweight")
+    questions.unshift(
+      "Is my weight healthy for me, and should anything be checked to understand it?",
+    );
+  if (
+    inputs.systolic !== undefined &&
+    inputs.diastolic !== undefined &&
+    (inputs.systolic >= 140 || inputs.diastolic >= 90)
+  )
+    questions.unshift(
+      "How should I confirm whether my blood pressure is persistently high?",
+    );
   if (glucose && glucose.category !== "Below common screening cutoff")
     questions.push(
       "How should I understand this blood sugar test and whether any follow-up is right for me?",
@@ -398,9 +451,10 @@ function actionPlan(inputs: ValidatedInputs): string[] {
     ];
   }
   const ranked: Array<{ priority: number; text: string }> = [];
+  const recommendedSleepMax = inputs.age >= 65 ? 8 : 9;
   if (
     inputs.sleepHours < 7 ||
-    inputs.sleepHours > 9 ||
+    inputs.sleepHours > recommendedSleepMax ||
     inputs.wakeUnrefreshed
   ) {
     ranked.push({
@@ -466,12 +520,13 @@ function fatigueReasons(
   bmiCategory: BMICategory,
 ): string[] {
   const reasons: Array<{ rank: number; text: string }> = [];
+  const recommendedSleepMax = inputs.age >= 65 ? 8 : 9;
   if (inputs.sleepHours < 7)
     reasons.push({
       rank: 100 - inputs.sleepHours * 2,
       text: `Your average sleep was ${inputs.sleepHours} hours a night, below the usual adult range.`,
     });
-  if (inputs.sleepHours > 9)
+  if (inputs.sleepHours > recommendedSleepMax)
     reasons.push({
       rank: 85,
       text: `You reported ${inputs.sleepHours} hours a night; longer sleep can sometimes go along with low energy.`,
@@ -509,20 +564,25 @@ function fatigueReasons(
     });
   if (
     inputs.restingHeartRate !== undefined &&
-    (inputs.restingHeartRate > 100 || inputs.restingHeartRate < 60)
+    (inputs.restingHeartRate > 100 || inputs.restingHeartRate < 50)
   ) {
     reasons.push({
       rank: 50,
       text: `Your resting heart rate was ${inputs.restingHeartRate} bpm; a repeat reading and how you feel are useful context.`,
     });
   }
-  if (
-    bmiCategory === "Underweight" &&
-    (inputs.age >= 65 || inputs.symptoms.includes("unexplainedWeightChange"))
+  if (bmiCategory === "Underweight") {
+    reasons.push({
+      rank: 90,
+      text: "Your BMI is in the underweight range; low body weight can go along with low energy and is worth discussing with a doctor.",
+    });
+  } else if (
+    inputs.age >= 65 ||
+    inputs.symptoms.includes("unexplainedWeightChange")
   ) {
     reasons.push({
       rank: 57,
-      text: "Low body weight or unintentional weight change can be useful to discuss with a doctor, especially if your energy is low.",
+      text: "Unintentional weight change can be useful to discuss with a doctor, especially if your energy is low.",
     });
   }
   if (inputs.caffeineCups !== undefined && inputs.caffeineCups >= 4)
@@ -573,7 +633,7 @@ export function buildWellnessReport(inputs: ValidatedInputs): WellnessReport {
     inputs.weightKg / (inputs.heightCm / 100) ** 2 < 35
       ? waistHeightRatio(inputs.waistCm, inputs.heightCm)
       : undefined;
-  const sleep = classifySleep(inputs.sleepHours);
+  const sleep = classifySleep(inputs.sleepHours, inputs.age);
   const heartRate =
     inputs.restingHeartRate === undefined
       ? undefined
@@ -583,6 +643,12 @@ export function buildWellnessReport(inputs: ValidatedInputs): WellnessReport {
   const safety = getSafetyFlags(inputs);
   if (glucose?.category === "At or above a common screening threshold")
     safety.medicalReview = true;
+  // WHO severe thinness (BMI < 16) warrants a clinical conversation on its own.
+  if (bmi.category === "Underweight" && bmi.value < 16)
+    safety.medicalReview = true;
+  if (inputs.age < 20 && bmi.category !== "Not assessed" && !pregnancy)
+    bmi.note +=
+      " At ages 18–19, clinicians sometimes use BMI-for-age percentiles instead of adult cut-offs; adult cut-offs are used here as a screening reference.";
   const severeReading = inputs.bloodPressureReadings.find(
     ({ systolic, diastolic }) => systolic > 180 || diastolic > 120,
   );
@@ -615,7 +681,15 @@ export function buildWellnessReport(inputs: ValidatedInputs): WellnessReport {
         ? "Talk to a doctor soon"
         : (bp.category !== "Not assessed" && bp.category !== "Normal") ||
             sleep.category !== "Recommended range" ||
-            (heartRate !== undefined && heartRate.category !== "Usual range") ||
+            (heartRate !== undefined &&
+              heartRate.category !== "Usual range" &&
+              heartRate.category !== "Below 60, often normal") ||
+            bmi.category === "Underweight" ||
+            bmi.category === "Obese" ||
+            bmi.category === "High risk" ||
+            ((bmi.category === "Overweight" ||
+              bmi.category === "Increased risk") &&
+              !inputs.muscularBuild) ||
             glucose?.category === "Common increased-risk screening range"
           ? "Some things to watch"
           : "No automatic flags";
@@ -649,7 +723,7 @@ export function buildWellnessReport(inputs: ValidatedInputs): WellnessReport {
         ? []
         : actionPlan(inputs),
     fatigueReasons: fatigueReasons(inputs, bmi.category),
-    doctorQuestions: doctorQuestions(inputs, glucose),
+    doctorQuestions: doctorQuestions(inputs, glucose, bmi.category),
   };
 }
 

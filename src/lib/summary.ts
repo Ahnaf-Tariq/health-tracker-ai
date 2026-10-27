@@ -68,7 +68,7 @@ export function buildReportText(report: WellnessReport): string {
     report.summary,
     `Overall status: ${report.status}`,
     "No validated energy or overall health score is calculated. This check-in cannot diagnose illness or rule out an emergency.",
-    "This report uses fixed rules and is calculated in your browser. If you choose to use the separate AI chat, your report context and messages are sent to Google Gemini; HealthTracker does not save them. The private safety note is excluded.",
+    "This report uses fixed rules and is calculated in your browser. If you attach it to an AI chat, a sanitized report snapshot and chat history are saved in your Firebase account. Each message and attached context are sent to Google Gemini when you chat. The private safety note is excluded.",
     "Values marked ~ are rounded for display; classifications use unrounded values.",
     ...(report.context.bloodPressureNote
       ? [report.context.bloodPressureNote]

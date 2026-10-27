@@ -2,8 +2,24 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, ArrowRight, Menu, Moon, Sun } from "lucide-react";
-import { useAppTheme } from "./AppProviders";
+import { useRouter } from "next/navigation";
+import { Dropdown, type MenuProps } from "antd";
+import { signOut } from "firebase/auth";
+import {
+  Activity,
+  ArrowRight,
+  ClipboardCheck,
+  LogOut,
+  Menu,
+  MessageCircle,
+  Moon,
+  Sun,
+  UserRound,
+} from "lucide-react";
+import { useAppTheme, useAuth } from "./AppProviders";
+import { getFirebaseAuth } from "../lib/firebase";
+import { useState } from "react";
+import { ConfirmationModal } from "./ConfirmationModal";
 
 export function Brand({ footer = false }: { footer?: boolean }) {
   return (
@@ -28,7 +44,43 @@ export function Brand({ footer = false }: { footer?: boolean }) {
 
 export function SiteHeader() {
   const { dark, toggleTheme } = useAppTheme();
+  const { user, authReady } = useAuth();
   const pathname = usePathname();
+  const router = useRouter();
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState("");
+
+  const accountItems: MenuProps["items"] = [
+    { key: "profile", label: "Profile", icon: <UserRound size={16} /> },
+    { key: "chat", label: "Chat history", icon: <MessageCircle size={16} /> },
+    { key: "check-in", label: "Check-in", icon: <ClipboardCheck size={16} /> },
+    { type: "divider" },
+    {
+      key: "sign-out",
+      label: "Sign out",
+      icon: <LogOut size={16} />,
+      danger: true,
+    },
+  ];
+
+  async function confirmLogout() {
+    if (signingOut) return;
+    setSigningOut(true);
+    setSignOutError("");
+    try {
+      await signOut(getFirebaseAuth());
+      setConfirmSignOut(false);
+      router.replace("/login");
+    } catch {
+      setSignOutError(
+        "You could not be signed out. Check your connection and try again.",
+      );
+    } finally {
+      setSigningOut(false);
+    }
+  }
+
   return (
     <>
       <header className="fixed inset-x-0 top-0 z-40 border-b border-line/60 bg-panel/95 shadow-[0_2px_12px_rgba(16,45,46,0.03)] backdrop-blur-md print:hidden">
@@ -101,25 +153,99 @@ export function SiteHeader() {
                   >
                     About us
                   </Link>
-                  <Link href="/check-in" className="font-semibold text-teal">
-                    Start your check-in →
-                  </Link>
+                  {!user && authReady ? (
+                    <Link href="/check-in" className="font-semibold text-teal">
+                      Start your check-in
+                    </Link>
+                  ) : null}
                 </nav>
               </details>
-              <Link
-                href="/check-in"
-                className="hidden min-h-10 items-center gap-2 rounded-full bg-ink px-3.5 text-[12px] font-medium text-white shadow-sm transition-colors hover:bg-teal sm:gap-3 sm:px-5 md:inline-flex dark:bg-teal-strong"
-                aria-label="Get Started"
-              >
-                <span className="hidden sm:inline">Get Started For Free</span>
-                <span className="sm:hidden">Start</span>
-                <ArrowRight size={14} />
-              </Link>
+              {user ? (
+                <Dropdown
+                  trigger={["click"]}
+                  placement="bottomRight"
+                  menu={{
+                    items: accountItems,
+                    onClick: ({ key }) => {
+                      if (key === "sign-out") {
+                        setSignOutError("");
+                        setConfirmSignOut(true);
+                      } else if (key === "profile") {
+                        router.push("/profile");
+                      } else if (key === "chat") {
+                        router.push("/chat");
+                      } else if (key === "check-in") {
+                        router.push("/check-in");
+                      }
+                    },
+                  }}
+                  popupRender={(menu) => (
+                    <div className="min-w-[200px] overflow-hidden rounded-xl border border-line bg-panel shadow-panel">
+                      <div className="border-b border-line px-4 py-3">
+                        <p className="mb-0 truncate text-[13px] font-semibold text-ink">
+                          {user.displayName || "Your account"}
+                        </p>
+                        {user.email ? (
+                          <p className="mb-0 mt-1 truncate text-[11px] text-muted">
+                            {user.email}
+                          </p>
+                        ) : null}
+                      </div>
+                      {menu}
+                    </div>
+                  )}
+                >
+                  <button
+                    type="button"
+                    className="inline-flex size-10 items-center justify-center overflow-hidden rounded-full border-2 border-teal-tint bg-teal-tint p-0"
+                    aria-label="Open account menu"
+                    title="Account menu"
+                  >
+                    <img
+                      src={user.photoURL || "/avatar-placeholder.png"}
+                      alt=""
+                      className="size-full object-cover"
+                      onError={(event) => {
+                        event.currentTarget.onerror = null;
+                        event.currentTarget.src = "/avatar-placeholder.png";
+                      }}
+                    />
+                  </button>
+                </Dropdown>
+              ) : authReady ? (
+                <Link
+                  href="/check-in"
+                  className="hidden min-h-10 items-center gap-2 rounded-full bg-ink px-3.5 text-[12px] font-medium text-white shadow-sm transition-colors hover:bg-teal sm:gap-3 sm:px-5 md:inline-flex dark:bg-teal-strong"
+                  aria-label="Get Started"
+                >
+                  <span className="hidden sm:inline">Get Started For Free</span>
+                  <span className="sm:hidden">Start</span>
+                  <ArrowRight size={14} />
+                </Link>
+              ) : (
+                <span
+                  aria-hidden="true"
+                  className="size-10 animate-pulse rounded-full bg-teal-tint"
+                />
+              )}
             </>
           </div>
         </div>
       </header>
-      <div className="h-[86px] shrink-0 print:hidden" aria-hidden="true" />
+      <div className="h-[78px] shrink-0 print:hidden" aria-hidden="true" />
+      <ConfirmationModal
+        open={confirmSignOut}
+        title="Sign out?"
+        message="You’ll be signed out on this device. Your profile and saved chats will remain in your account."
+        confirmLabel="Sign out"
+        busyLabel="Signing out…"
+        icon={<LogOut size={18} aria-hidden="true" />}
+        confirmVariant="danger"
+        busy={signingOut}
+        errorMessage={signOutError}
+        onClose={() => setConfirmSignOut(false)}
+        onConfirm={confirmLogout}
+      />
     </>
   );
 }
