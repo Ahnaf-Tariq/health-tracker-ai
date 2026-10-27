@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
+import { connection } from "next/server";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
 import localFont from "next/font/local";
 import { AppProviders } from "../components/AppProviders";
@@ -40,7 +41,13 @@ export const viewport: Viewport = {
   themeColor: "#f8f9f6",
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  await connection();
+
   return (
     <html
       lang="en"
